@@ -3,10 +3,10 @@ package main
 import (
 	"database/sql"
 	//"encoding/json"
-	"html/template"
-	"net/http"
 	"fmt"
+	"html/template"
 	"log"
+	"net/http"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -17,23 +17,25 @@ var tpl *template.Template
 var cookie_name = "my_messaging_board"
 
 type Post struct {
-	ID			uint64		`json:"ID"`
-	UserID		uint64		`json:"user_ID"`
-	Content		string		`json:"content"`
-	Timestamp	string		`json:"timestamp"`
+	ID        uint64 `json:"ID"`
+	UserID    uint64 `json:"user_ID"`
+	Content   string `json:"content"`
+	Timestamp string `json:"timestamp"`
 }
 
 type User struct {
-	ID			uint64		`json:"ID"`
-	Username	string		`json:"username"`
-	Password	string		`json:"password"`
+	ID       uint64 `json:"ID"`
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 func initDB() {
 	var err error
-    db, err = sql.Open("sqlite3", "./app.db")
+	db, err = sql.Open("sqlite3", "./app.db")
 
-	if (err != nil) { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS posts (
@@ -44,7 +46,9 @@ func initDB() {
 		);
 	`)
 
-	if (err != nil) { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS users (
@@ -54,7 +58,9 @@ func initDB() {
 		);	
 	`)
 
-	if (err != nil) { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS sessions (
@@ -64,7 +70,9 @@ func initDB() {
 		);
 	`)
 
-	if (err != nil) { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	fmt.Println("Database initialized")
 }
@@ -72,7 +80,7 @@ func initDB() {
 func createUser(username string, password string) int {
 	_, err := db.Exec("INSERT INTO users (Username, Password) VALUES (?, ?)", username, password)
 
-	if (err != nil) {
+	if err != nil {
 		log.Fatal(err)
 		return 1
 	}
@@ -83,14 +91,18 @@ func createUser(username string, password string) int {
 
 func sessionValid(r *http.Request) bool {
 	cookie, err := r.Cookie(cookie_name)
-	if (err != nil) { return false }
+	if err != nil {
+		return false
+	}
 
 	rows, err := db.Query(`SELECT session_id FROM sessions WHERE session_id = ?`, cookie.Value)
-	if (err != nil) { return false }
+	if err != nil {
+		return false
+	}
 
 	defer rows.Close()
 
-	if (rows.Next()) {
+	if rows.Next() {
 		return true
 	}
 
@@ -98,7 +110,7 @@ func sessionValid(r *http.Request) bool {
 }
 
 func indexHandler(w http.ResponseWriter, r *http.Request) {
-	if (sessionValid(r)) {
+	if sessionValid(r) {
 		// logged in, return posts
 		tpl.ExecuteTemplate(w, "index.html", nil)
 	} else {
@@ -115,12 +127,13 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	username := r.FormValue("name")
 	password := r.FormValue("password")
 
-	if (username == "" || password == "") {
+	if username == "" || password == "" {
 		tpl.ExecuteTemplate(w, "login.html", nil)
 		return
 	}
 
-	err = db.QueryRow("SELECT username FROM users WHERE username = ? AND password = ?", username, password)
+	//err = db.QueryRow("SELECT username FROM users WHERE username = ? AND password = ?", username, password)
+}
 
 func main() {
 	initDB()
@@ -129,7 +142,6 @@ func main() {
 	http.HandleFunc("/", indexHandler)
 	http.HandleFunc("/signup", signupHandler)
 	http.HandleFunc("/login", loginHandler)
-
 
 	fmt.Println("Server running on port 1234")
 	log.Fatal(http.ListenAndServe(":1234", nil))
