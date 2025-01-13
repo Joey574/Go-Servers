@@ -14,7 +14,7 @@ import (
 var db *sql.DB
 var tpl *template.Template
 
-var cookie_name = "my_database_board"
+var cookie_name = "my_database"
 
 type Post struct {
 	ID        uint64 `json:"ID"`
