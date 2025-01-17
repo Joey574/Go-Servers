@@ -1,10 +1,9 @@
-//go:build a
-
 package main
 
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math/rand/v2"
 	"net"
 	"os"
@@ -18,9 +17,10 @@ func handleConnection(conn net.Conn, id int) {
 	recvbuf := make([]byte, 4)
 
 	for {
-		a := 200 + rand.Float32()*(150)
-		b := 100 + rand.Float32()*(80)
-		c := 1 + rand.Float32()*(0.1)
+		task := <-queue
+		a := task.a
+		b := task.b
+		c := task.c
 
 		buf := new(bytes.Buffer)
 		binary.Write(buf, binary.BigEndian, a)
@@ -42,14 +42,34 @@ func handleConnection(conn net.Conn, id int) {
 
 		recvval := binary.BigEndian.Uint32(recvbuf)
 		res := float32(recvval)
-		print("Result (conn ", id, "): ", res, " | ", elapsed.Seconds(), " seconds\n")
+		fmt.Printf("Result (conn %d): %f | %.3f seconds\n", id, res, elapsed.Seconds())
 	}
 
 	println("Worker Disconnected")
 }
 
+var queue chan *Task
+
+type Task struct {
+	a float32
+	b float32
+	c float32
+}
+
 func main() {
 	println("Control Started")
+
+	size := 100
+	queue = make(chan *Task, size)
+
+	for i := 0; i < size; i++ {
+		var task Task
+		task.a = 200 + rand.Float32()*(150)
+		task.b = 100 + rand.Float32()*(80)
+		task.c = 1 + rand.Float32()*(0.1)
+
+		queue <- &task
+	}
 
 	port := "1234"
 	address := "localhost:" + port
@@ -70,6 +90,6 @@ func main() {
 		}
 
 		go handleConnection(conn, workers)
-		workers += 1
+		workers++
 	}
 }

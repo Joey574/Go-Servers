@@ -1,5 +1,3 @@
-//go:build b
-
 package main
 
 import (
@@ -40,16 +38,9 @@ func handleConnection(conn net.Conn) {
 			b *= (b * c) / a
 			c /= b + c
 
-			res -= (a / b) * c
-
-			a /= b
-			b /= a
-
 			a *= float32(math.Sin(float64(b)))
 			b *= float32(math.Cos(float64(a)))
 			c = float32(math.Sin(float64(c)))
-
-			res *= (a / b) + a
 
 			res = float32(math.Sin(float64(res)))
 
