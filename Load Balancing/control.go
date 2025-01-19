@@ -1,3 +1,5 @@
+//go:build a
+
 package main
 
 import (
@@ -18,14 +20,11 @@ func handleConnection(conn net.Conn, id int) {
 
 	for {
 		task := <-queue
-		a := task.a
-		b := task.b
-		c := task.c
 
 		buf := new(bytes.Buffer)
-		binary.Write(buf, binary.BigEndian, a)
-		binary.Write(buf, binary.BigEndian, b)
-		binary.Write(buf, binary.BigEndian, c)
+		binary.Write(buf, binary.BigEndian, task.a)
+		binary.Write(buf, binary.BigEndian, task.b)
+		binary.Write(buf, binary.BigEndian, task.c)
 
 		startTime := time.Now()
 
@@ -42,7 +41,7 @@ func handleConnection(conn net.Conn, id int) {
 
 		recvval := binary.BigEndian.Uint32(recvbuf)
 		res := float32(recvval)
-		fmt.Printf("Result (conn %d): %f | %.3f seconds\n", id, res, elapsed.Seconds())
+		fmt.Printf("Result (conn %d): %.3f | %.3f seconds\n", id, res, elapsed.Seconds())
 	}
 
 	println("Worker Disconnected")
@@ -59,7 +58,7 @@ type Task struct {
 func main() {
 	println("Control Started")
 
-	size := 100
+	size := 200
 	queue = make(chan *Task, size)
 
 	for i := 0; i < size; i++ {

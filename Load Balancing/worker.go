@@ -1,3 +1,5 @@
+//go:build b
+
 package main
 
 import (
@@ -8,6 +10,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"os"
+	"time"
 )
 
 func handleConnection(conn net.Conn) {
@@ -20,6 +23,8 @@ func handleConnection(conn net.Conn) {
 		if err != nil {
 			break
 		}
+
+		startTime := time.Now()
 
 		ua := binary.BigEndian.Uint32(recvbuf[:4])
 		ub := binary.BigEndian.Uint32(recvbuf[4:8])
@@ -54,6 +59,9 @@ func handleConnection(conn net.Conn) {
 
 		buf := new(bytes.Buffer)
 		binary.Write(buf, binary.BigEndian, res)
+
+		elapsed := time.Since(startTime)
+		fmt.Printf("Task completed: %.3f seconds\n", elapsed.Seconds())
 
 		_, err = conn.Write(buf.Bytes())
 		if err != nil {
