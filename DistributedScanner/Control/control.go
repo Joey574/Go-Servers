@@ -3,9 +3,7 @@
 package main
 
 import (
-	rsaUtils "DistributedScanner/Utils"
-	"bytes"
-	"encoding/gob"
+	utils "DistributedScanner/Utils"
 	"flag"
 	"fmt"
 	"net"
@@ -13,74 +11,93 @@ import (
 	"time"
 )
 
-type Task struct {
-	Ipv4    uint32
-	Mask    uint32
-	Scanner uint8
-	Args    string
-}
+var queue chan *utils.Task
+var serverLog *os.File
 
-var queue chan *Task
+const NIPS_PER_TASK = 256
+const TASK_MASK = 24
 
-const NIPS_PER_TASK = 4096
-const TASK_MASK = 20
-
-const CIPHERTEXT = "Ciphertext\n"
-const SIGNATURE = "\nSignature\n"
-
-func packIP(ip net.IP) uint32 {
-	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
-}
-func unpackIP(ip uint32) net.IP {
-	return net.IPv4(byte(ip>>24&0xff), byte(ip>>16&0xff), byte(ip>>8&0xff), byte(ip&0xff))
-}
-
-func handleConnection(conn net.Conn, id int) {
+func handleConnection(conn net.Conn, id int, password []byte) {
 	defer conn.Close()
 	fmt.Println("Worker connected")
 
+	var task *utils.Task
+	var status int = 0
+	var log string = fmt.Sprintf("Worker %d connected\n", id)
+
 	for {
 		startTime := time.Now()
+		log += fmt.Sprintf("\tDate [%s]\n", startTime.Format("2006-01-02 15:04:05"))
 
-		// establish rsa with connection
-		privateKey, _, connPubKey, err := rsaUtils.RSAHandshake(conn)
-		if err != nil {
-			fmt.Println("Error performing RSA handshake")
+		// exit out if finished
+		if len(queue) == 0 {
+			log += "\tOut of tasks\n"
+			status = 0
 			break
 		}
 
-		// grab a task from the queue
-		task := <-queue
+		// establish rsa with connection
+		privateKey, _, connPubKey, err := utils.RSAHandshake(conn)
+		if err != nil {
+			log += fmt.Sprintf("\tError performing RSA handshake: %s\n\n", err.Error())
+			status = 1
+			break
+		}
 
-		// convert Task struct to []bytes
-		var buf bytes.Buffer
-		enc := gob.NewEncoder(&buf)
-		enc.Encode(task)
-		plaintext := buf.Bytes()
+		handshakeTime := time.Since(startTime)
+		log += fmt.Sprintf("\tRSA Handshake [%f seconds]\n", handshakeTime.Seconds())
+
+		// grab a task from the queue
+		task = <-queue
+		log += fmt.Sprintf("\tSending task to worker:\n\t\tIpv4: %s\n\t\tMask: %d\n\t\tScanner: %d\n\t\tArgs: %s\n",
+			utils.UnpackIP(task.Ipv4), task.Mask, task.Scanner, task.Args)
+
+		// add expire time
+		task.Expires = time.Now().Add(time.Minute)
+
+		// serialize task into binary
+		plaintext := utils.SerializeStruct(task)
 
 		// send task to connection
-		err = rsaUtils.SendMessage(conn, plaintext, privateKey, connPubKey)
+		err = utils.SendMessage(conn, plaintext, password, privateKey, connPubKey)
 		if err != nil {
-			fmt.Println("Error sending task to worker")
+			log += fmt.Sprintf("\tError sending task to worker: %s\n\n", err.Error())
+			status = 1
 			break
 		}
 
 		// recieve results from connection
-		results, err := rsaUtils.RecieveMessage(conn, privateKey, connPubKey)
+		resultBytes, err := utils.RecieveMessage(conn, password, privateKey, connPubKey)
 		if err != nil {
-			fmt.Println("Error recieving message from worker")
+			log += fmt.Sprintf("\tError recieving message from worker: %s\n\n", err.Error())
+			status = 1
 			break
 		}
-		fmt.Println("\nResults:\n", string(results))
+
+		results, err := utils.DeserializeResult(resultBytes)
+		if err != nil {
+			log += fmt.Sprintf("\tError parsing result struct: %s\n\n", err.Error())
+			status = 1
+			break
+		}
 
 		elapsed := time.Since(startTime)
-		fmt.Println("Task completed in ", elapsed.Seconds(), " seconds")
+		log += fmt.Sprintf("\tScan Complete [%f seconds]\n\tConnection Complete [%f seconds]\n\n", results.ScanTime, elapsed.Seconds())
+	}
+
+	// if there was an error during execution, add the most recent task back to the queue
+	if status == 1 {
+		log += fmt.Sprintf("\tAdding task to queue:\n\t\tIpv4: %s\n\t\tMask: %d\n\t\tScanner: %d\n\t\tArgs: %s\n",
+			utils.UnpackIP(task.Ipv4), task.Mask, task.Scanner, task.Args)
+		queue <- task
 	}
 
 	fmt.Println("Worker Disconnected")
+	log += fmt.Sprintf("Worker %d disconnected\n\n", id)
+	serverLog.WriteString(log)
 }
 
-func startDistribution() {
+func startDistribution(passwordHash []byte) {
 	port := "1234"
 	address := "localhost:" + port
 
@@ -101,46 +118,52 @@ func startDistribution() {
 			continue
 		}
 
-		go handleConnection(conn, workers)
+		go handleConnection(conn, workers, passwordHash)
 		workers++
 	}
 }
 
 func main() {
+	// server log
+	serverLog, _ = os.OpenFile("serverlog.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+
+	// set up args
+	scannerArgs := flag.String("args", "", "Send args to scanner")
 
 	flag.Parse()
 	args := flag.Args()
 
-	if len(args) < 1 {
+	if len(args) < 2 {
 		os.Exit(1)
 	}
 
 	iprange := args[0]
+	password := utils.Hash([]byte(args[1]))
 
 	ip, subnet, _ := net.ParseCIDR(iprange)
 	subnetMask, _ := subnet.Mask.Size()
 
 	// ip range we're covering, network being start ip and broadcast being end ip
 	var broadcast uint32 = 1 << (32 - uint(subnetMask))
-	var network uint32 = packIP(ip)
+	var network uint32 = utils.PackIP(ip)
 
-	// nips = number of ips we're covering, ntasks is the number of tasks we need to dispatch
+	// set up for number of tasks we need
 	var nips uint32 = broadcast - network
 	var ntasks int = max(int(nips)/NIPS_PER_TASK, 1)
-	queue = make(chan *Task, ntasks)
+	queue = make(chan *utils.Task, ntasks)
 
-	fmt.Println("Scanning ", nips, " IP(s) | Generating ", ntasks, " task(s)")
+	fmt.Println("Scanning", nips, "IP(s) | Generating", ntasks, "task(s)")
 	for i := 0; i < ntasks; i++ {
-		var task Task
+		var task utils.Task
 		task.Ipv4 = uint32(i * NIPS_PER_TASK)
 		task.Mask = TASK_MASK
 		task.Scanner = 0
-		task.Args = "-sn --min-parallelism 100"
+		task.Args = *scannerArgs
 
 		// add task to queue
 		queue <- &task
 	}
 
 	// start listening for worker threads
-	startDistribution()
+	startDistribution(password)
 }

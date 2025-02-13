@@ -1,4 +1,4 @@
-package rsaUtils
+package utils
 
 import (
 	"bytes"
@@ -8,8 +8,8 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/binary"
+	"fmt"
 	"net"
-	"strings"
 )
 
 const CIPHERTEXT = "Ciphertext\n"
@@ -60,7 +60,7 @@ func VerifySignature(publicKey *rsa.PublicKey, message, signature []byte) error 
 }
 
 func RSAHandshake(conn net.Conn) (*rsa.PrivateKey, *rsa.PublicKey, *rsa.PublicKey, error) {
-	// generate 2048 bit rsa keys
+	// generate rsa keys
 	privateKey, publicKey, err := GenerateRSAKeys(RSA_KEY_SIZE)
 	if err != nil {
 		return nil, nil, nil, err
@@ -89,79 +89,119 @@ func RSAHandshake(conn net.Conn) (*rsa.PrivateKey, *rsa.PublicKey, *rsa.PublicKe
 	return privateKey, &privateKey.PublicKey, connPubKey, nil
 }
 
-func SendMessage(conn net.Conn, message []byte, privateKey *rsa.PrivateKey, connPubKey *rsa.PublicKey) error {
+func SendMessage(conn net.Conn, plaintext []byte, password []byte, privateKey *rsa.PrivateKey, connPubKey *rsa.PublicKey) error {
+	/*
+		Message Format:
+			[RSA Signature]
+			[RSA] password hash
+			[RSA] AES key
+			[RSA] Ciphertext length
+			[AES] Ciphertext
+	*/
 
-	// encrypt results
-	ciphertext, err := EncryptRSA(connPubKey, message)
+	// generate aes key
+	aesKey, err := GenerateAESKey()
 	if err != nil {
 		return err
 	}
 
-	// sign results
-	signature, err := SignData(privateKey, message)
+	// encrypt message with aes key
+	ciphertext, err := EncryptAES(aesKey, plaintext)
+	if err != nil {
+		return err
+	}
+
+	// get length of ciphertext
+	ctlenbuf := new(bytes.Buffer)
+	binary.Write(ctlenbuf, binary.BigEndian, uint32(len(ciphertext)))
+
+	// format data to be RSA encrypted
+	rsaData := append(append(password, aesKey...), ctlenbuf.Bytes()...)
+
+	rsaCiphertext, err := EncryptRSA(connPubKey, rsaData)
 	if err != nil {
 		return err
 	}
 
 	// format message
-	lenbuf := new(bytes.Buffer)
-	formatted := append(append(append([]byte(CIPHERTEXT), ciphertext...), []byte(SIGNATURE)...), signature...)
-	binary.Write(lenbuf, binary.BigEndian, uint32(len(formatted)))
+	message := append(rsaCiphertext, ciphertext...)
 
-	// send message length and message
-	conn.Write(lenbuf.Bytes())
-	conn.Write(formatted)
+	// sign message
+	signature, err := SignData(privateKey, message)
+	if err != nil {
+		return err
+	}
+
+	// prepend signature
+	message = append(signature, message...)
+
+	// send message
+	_, err = conn.Write(message)
 	if err != nil {
 		return err
 	}
 
 	return nil
 }
-func RecieveMessage(conn net.Conn, privateKey *rsa.PrivateKey, connPubKey *rsa.PublicKey) ([]byte, error) {
-	// get message length
-	lenbuf := make([]byte, 4)
-	var mlen uint32
+func RecieveMessage(conn net.Conn, password []byte, privateKey *rsa.PrivateKey, connPubKey *rsa.PublicKey) ([]byte, error) {
+	/*
+		/*
+		Message Format:
+			[RSA Signature]
+			[RSA] password hash
+			[RSA] AES key
+			[RSA] Ciphertext length
+			[AES] Ciphertext
+	*/
 
-	_, err := conn.Read(lenbuf)
+	// get RSA Signature
+	signature := make([]byte, RSA_KEY_SIZE/8)
+	_, err := conn.Read(signature)
 	if err != nil {
 		return nil, err
+	}
+
+	// get RSA encrypted data
+	rsaCiphertext := make([]byte, RSA_KEY_SIZE/8)
+	_, err = conn.Read(rsaCiphertext)
+	if err != nil {
+		return nil, err
+	}
+
+	rsaData, err := DecryptRSA(privateKey, rsaCiphertext)
+	if err != nil {
+		return nil, err
+	}
+
+	recvPassword := rsaData[:32]
+	aesKey := rsaData[32:64]
+	ctLenBytes := rsaData[64:68]
+
+	if string(recvPassword) != string(password) {
+		return nil, fmt.Errorf("password hashes do not match")
 	}
 
 	// convert to uint32
-	tbuf := bytes.NewReader(lenbuf)
-	binary.Read(tbuf, binary.BigEndian, &mlen)
+	var ctlen uint32
+	tbuf := bytes.NewReader(ctLenBytes)
+	binary.Read(tbuf, binary.BigEndian, &ctlen)
 
-	// read actual message
-	buf := make([]byte, mlen)
-	_, err = conn.Read(buf)
+	// read ciphertext
+	ctbuf := make([]byte, ctlen)
+	_, err = conn.Read(ctbuf)
 	if err != nil {
 		return nil, err
 	}
 
-	// parse the message
-	message := string(buf)
-
-	ctIdx := strings.Index(message, CIPHERTEXT)
-	sigIdx := strings.Index(message, SIGNATURE)
-	if ctIdx == -1 || sigIdx == -1 {
-		return nil, err
+	// verify message signature
+	formatted := append(rsaCiphertext, ctbuf...)
+	err = VerifySignature(connPubKey, formatted, signature)
+	if err != nil {
+		return nil, fmt.Errorf("message signature invalid")
 	}
-
-	// parse ciphertext and signature
-	ctIdx += len(CIPHERTEXT)
-	ciphertext := message[ctIdx:sigIdx]
-
-	sigIdx += len(SIGNATURE)
-	signature := message[sigIdx:]
 
 	// decrypt message
-	plaintext, err := DecryptRSA(privateKey, []byte(ciphertext))
-	if err != nil {
-		return nil, err
-	}
-
-	// verify signature
-	err = VerifySignature(connPubKey, []byte(plaintext), []byte(signature))
+	plaintext, err := DecryptAES(aesKey, ctbuf)
 	if err != nil {
 		return nil, err
 	}

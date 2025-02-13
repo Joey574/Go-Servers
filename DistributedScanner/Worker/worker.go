@@ -3,9 +3,8 @@
 package main
 
 import (
-	rsaUtils "DistributedScanner/Utils"
-	"bytes"
-	"encoding/gob"
+	utils "DistributedScanner/Utils"
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -14,21 +13,15 @@ import (
 	"time"
 )
 
-type Task struct {
-	Ipv4    uint32
-	Mask    uint32
-	Scanner uint8
-	Args    string
-}
-
 const CIPHERTEXT = "Ciphertext\n"
 const SIGNATURE = "\nSignature\n"
 
-func executeTask(task Task) ([]byte, error) {
+func executeTask(task utils.Task) ([]byte, error) {
 	cmd := "nmap"
-	args := strings.Fields(task.Args)
+	fArgs := fmt.Sprintf("%s %s/%d", task.Args, utils.UnpackIP(task.Ipv4), task.Mask)
+	args := strings.Fields(fArgs)
 
-	fmt.Println("Executing: ", cmd, " with args: ", args)
+	fmt.Println("Executing: ", cmd, args)
 	scan := exec.Command(cmd, args...)
 
 	output, err := scan.CombinedOutput()
@@ -39,56 +32,74 @@ func executeTask(task Task) ([]byte, error) {
 	return output, nil
 }
 
-func handleConnection(conn net.Conn) {
+func handleConnection(conn net.Conn, password []byte) {
 	defer conn.Close()
 
 	for {
-		startTime := time.Now()
-
 		// establish rsa with server
-		privateKey, _, connPubKey, err := rsaUtils.RSAHandshake(conn)
+		privateKey, _, connPubKey, err := utils.RSAHandshake(conn)
 		if err != nil {
 			fmt.Println("Error performing RSA handshake", err.Error())
 			break
 		}
 
 		// recieve plaintext from connection
-		plaintext, err := rsaUtils.RecieveMessage(conn, privateKey, connPubKey)
+		plaintext, err := utils.RecieveMessage(conn, password, privateKey, connPubKey)
 		if err != nil {
-			fmt.Println("Error recieving task from control")
+			fmt.Println("Error recieving task from control:", err.Error())
 			break
 		}
 
 		// read data into task struct
-		var task Task
-		dec := gob.NewDecoder(bytes.NewReader(plaintext))
-		err = dec.Decode(&task)
+		task, err := utils.DeserializeTask(plaintext)
 		if err != nil {
-			fmt.Println("Error reading into Task")
+			fmt.Println("Error deserializing task")
+			break
+		}
+
+		if task.Expires.Before(time.Now()) {
+			fmt.Println("Task already expired")
 			break
 		}
 
 		// execute the task
-		results, err := executeTask(task)
+		startTime := time.Now()
+		scanString, err := executeTask(task)
 		if err != nil {
-			fmt.Println("Error executing task")
+			fmt.Println("Error executing task:", err.Error())
 			break
 		}
+		elapsed := time.Since(startTime)
+		fmt.Println("Scan completed in", elapsed.Seconds(), "seconds")
+
+		// form results struct
+		var results utils.Result
+		results.ScanResult = string(scanString)
+		results.ScanTime = float32(elapsed.Seconds())
+
+		// serialize
+		message := utils.SerializeStruct(results)
 
 		// send message to control
-		err = rsaUtils.SendMessage(conn, results, privateKey, connPubKey)
+		err = utils.SendMessage(conn, message, password, privateKey, connPubKey)
 		if err != nil {
-			fmt.Println("Error sending message to control")
+			fmt.Println("Error sending message to control:", err.Error())
 			break
 		}
-
-		elapsed := time.Since(startTime)
-		fmt.Println("Task completed in ", elapsed.Seconds(), " seconds")
 	}
 }
 
 func main() {
 	fmt.Println("Worker Started")
+
+	flag.Parse()
+	args := flag.Args()
+
+	if len(args) < 1 {
+		os.Exit(1)
+	}
+
+	password := utils.Hash([]byte(args[0]))
 
 	ipAddress := "127.0.0.1"
 	port := "1234"
@@ -101,6 +112,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	handleConnection(conn)
+	handleConnection(conn, password)
 	fmt.Println("Worker Exiting")
 }
