@@ -13,13 +13,9 @@ import (
 	"time"
 )
 
-const CIPHERTEXT = "Ciphertext\n"
-const SIGNATURE = "\nSignature\n"
-
 func executeTask(task utils.Task) ([]byte, error) {
-	cmd := "nmap"
-	fArgs := fmt.Sprintf("%s %s/%d", task.Args, utils.UnpackIP(task.Ipv4), task.Mask)
-	args := strings.Fields(fArgs)
+	cmd := task.Cmd
+	args := strings.Fields(task.Args)
 
 	fmt.Println("Executing: ", cmd, args)
 	scan := exec.Command(cmd, args...)
@@ -57,35 +53,40 @@ func handleConnection(conn net.Conn, password []byte) {
 			break
 		}
 
+		// ensure task isn't expired
 		if task.Expires.Before(time.Now()) {
 			fmt.Println("Task already expired")
 			break
 		}
 
 		// execute the task
-		startTime := time.Now()
-		scanString, err := executeTask(task)
-		if err != nil {
-			fmt.Println("Error executing task:", err.Error())
+		if task.Status == utils.EXEC_TASK {
+			startTime := time.Now()
+			scanString, err := executeTask(task)
+			if err != nil {
+				fmt.Println("Error executing task:", err.Error())
+				break
+			}
+			elapsed := time.Since(startTime)
+
+			// form results struct
+			var results utils.Result
+			results.CmdResult = string(scanString)
+			results.CmdTime = float32(elapsed.Seconds())
+
+			// serialize
+			message := utils.SerializeStruct(results)
+
+			// send message to control
+			err = utils.SendMessage(conn, message, password, privateKey, connPubKey)
+			if err != nil {
+				fmt.Println("Error sending message to control:", err.Error())
+				break
+			}
+		} else if task.Status == utils.EXIT_TASK {
 			break
 		}
-		elapsed := time.Since(startTime)
-		fmt.Println("Scan completed in", elapsed.Seconds(), "seconds")
 
-		// form results struct
-		var results utils.Result
-		results.ScanResult = string(scanString)
-		results.ScanTime = float32(elapsed.Seconds())
-
-		// serialize
-		message := utils.SerializeStruct(results)
-
-		// send message to control
-		err = utils.SendMessage(conn, message, password, privateKey, connPubKey)
-		if err != nil {
-			fmt.Println("Error sending message to control:", err.Error())
-			break
-		}
 	}
 }
 

@@ -12,10 +12,7 @@ import (
 	"net"
 )
 
-const CIPHERTEXT = "Ciphertext\n"
-const SIGNATURE = "\nSignature\n"
-
-const RSA_KEY_SIZE = 2048
+const RSA_KEY_SIZE = 4096
 
 func GenerateRSAKeys(bits int) (*rsa.PrivateKey, *rsa.PublicKey, error) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, bits)
@@ -145,7 +142,6 @@ func SendMessage(conn net.Conn, plaintext []byte, password []byte, privateKey *r
 }
 func RecieveMessage(conn net.Conn, password []byte, privateKey *rsa.PrivateKey, connPubKey *rsa.PublicKey) ([]byte, error) {
 	/*
-		/*
 		Message Format:
 			[RSA Signature]
 			[RSA] password hash

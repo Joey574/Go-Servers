@@ -9,20 +9,22 @@ import (
 )
 
 type Task struct {
-	Ipv4    uint32
-	Mask    uint32
-	Scanner uint8
+	Status  uint8
+	Cmd     string
 	Args    string
 	Expires time.Time
 }
 
 type Result struct {
-	ScanResult string
-	ScanTime   float32
+	CmdResult string
+	CmdTime   float32
 }
 
+const EXEC_TASK uint8 = 0
+const EXIT_TASK uint8 = 1
+
 func PackIP(ip net.IP) uint32 {
-	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+	return uint32(ip[12])<<24 | uint32(ip[13])<<16 | uint32(ip[14])<<8 | uint32(ip[15])
 }
 func UnpackIP(ip uint32) net.IP {
 	return net.IPv4(byte(ip>>24&0xff), byte(ip>>16&0xff), byte(ip>>8&0xff), byte(ip&0xff))
