@@ -31,10 +31,11 @@ func main() {
 
 	state := &utils.State{
 		StatusCode:   utils.STATUS_PAUSE,
-		TaskQueue:    make(chan *utils.Task, 100),
+		TaskQueue:    make(chan *utils.Task, 4096),
 		ResultQueue:  make(chan *utils.Result, 100),
 		PasswordHash: utils.Hash([]byte(args[0])),
 	}
+	fmt.Println("Execution paused")
 
 	go startDistribution(state)
 	inputHandler(state)
@@ -80,6 +81,7 @@ func processCommand(input string, state *utils.State) {
 	//  supported commands {"status", "pause", "resume", "quit", "task", "taskall", "scantask"}
 	switch parts[0] {
 	case "status":
+		fmt.Printf("State:\n\tStatusCode: %d\n\tTasks: %d\n\tIpRanges: %s\n", state.StatusCode, len(state.TaskQueue), state.IPRanges)
 
 	case "pause":
 		state.Lock()

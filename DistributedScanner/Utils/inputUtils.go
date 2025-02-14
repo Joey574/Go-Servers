@@ -42,7 +42,7 @@ func InputAddScanTask(state *State, input []string) {
 	var broadcast uint32 = 1<<(32-uint(subnetMask)) + network
 
 	// set up for number of tasks we need
-	nips_per_task := uint32(math.Pow(2, TASK_MASK))
+	nips_per_task := uint32(math.Pow(2, 32-TASK_MASK))
 	var nips uint32 = broadcast - network
 	var ntasks uint32 = max(nips/nips_per_task, 1)
 
