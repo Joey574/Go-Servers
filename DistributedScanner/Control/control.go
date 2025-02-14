@@ -143,7 +143,7 @@ func startDistribution(state *utils.State) {
 	defer listener.Close()
 
 	// accept incoming connections and pass them off to be handled
-	workers := 0
+	state.WorkerID = 0
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -151,11 +151,11 @@ func startDistribution(state *utils.State) {
 			continue
 		}
 
-		go handleConnection(conn, workers, state)
-		workers++
+		go handleConnection(conn, state.WorkerID, state)
+		state.WorkerID++
 	}
 }
-func handleConnection(conn net.Conn, id int, state *utils.State) {
+func handleConnection(conn net.Conn, id uint32, state *utils.State) {
 	defer conn.Close()
 	fmt.Println("Worker connected")
 
@@ -179,7 +179,7 @@ func handleConnection(conn net.Conn, id int, state *utils.State) {
 		log += fmt.Sprintf("\tRSA Handshake [%f seconds]\n", handshakeTime.Seconds())
 
 		// get task
-		task = formatTask(task)
+		task = getTask(state, id, task)
 		log += fmt.Sprintf("\tSending task to worker:\n\t\tStatus: %d\n\t\tCommand: %s\n\t\tArgs: %s\n", task.Status, task.Cmd, task.Args)
 
 		// serialize task into binary
@@ -224,14 +224,12 @@ func handleConnection(conn net.Conn, id int, state *utils.State) {
 	serverLog.WriteString(log)
 }
 
-func formatTask(task *utils.Task) *utils.Task {
-	// if len(taskQueue) > 0 {
-	// 	task = <-taskQueue
-	// 	task.Status = utils.EXEC_TASK
-	// } else {
-	// 	task.Status = utils.EXIT_TASK
-	// }
+func getTask(state *utils.State, id uint32, task *utils.Task) *utils.Task {
 
-	// task.Expires = time.Now().Add(time.Minute)
+	if len(state.WorkerQueues[id]) > 0 {
+		task = &state.WorkerQueues[id][0]
+		state.WorkerQueues[id] = state.WorkerQueues[id][1:]
+	}
+
 	return task
 }
