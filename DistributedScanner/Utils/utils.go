@@ -5,23 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/gob"
 	"net"
-	"time"
 )
-
-type Task struct {
-	Status  uint8
-	Cmd     string
-	Args    string
-	Expires time.Time
-}
-
-type Result struct {
-	CmdResult string
-	CmdTime   float32
-}
-
-const EXEC_TASK uint8 = 0
-const EXIT_TASK uint8 = 1
 
 func PackIP(ip net.IP) uint32 {
 	return uint32(ip[12])<<24 | uint32(ip[13])<<16 | uint32(ip[14])<<8 | uint32(ip[15])

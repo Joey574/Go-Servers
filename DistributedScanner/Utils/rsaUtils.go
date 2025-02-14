@@ -12,8 +12,6 @@ import (
 	"net"
 )
 
-const RSA_KEY_SIZE = 4096
-
 func GenerateRSAKeys(bits int) (*rsa.PrivateKey, *rsa.PublicKey, error) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, bits)
 	if err != nil {

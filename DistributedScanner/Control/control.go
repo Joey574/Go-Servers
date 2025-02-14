@@ -8,30 +8,152 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 	"time"
+
+	"github.com/peterh/liner"
 )
-
-const NIPS_PER_TASK uint32 = 256
-const TASK_MASK = 24
-
-var taskQueue chan *utils.Task
-var resultQueue chan *utils.Result
 
 var serverLog *os.File
 
-func formatTask(task *utils.Task) *utils.Task {
-	if len(taskQueue) > 0 {
-		task = <-taskQueue
-		task.Status = utils.EXEC_TASK
-	} else {
-		task.Status = utils.EXIT_TASK
+func main() {
+	// server log
+	serverLog, _ = os.OpenFile("serverlog.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+
+	flag.Parse()
+	args := flag.Args()
+	if len(args) < 1 {
+		fmt.Println("Please input a password")
+		os.Exit(1)
 	}
 
-	task.Expires = time.Now().Add(time.Minute)
-	return task
+	state := &utils.State{
+		StatusCode:   utils.STATUS_PAUSE,
+		TaskQueue:    make(chan *utils.Task, 100),
+		ResultQueue:  make(chan *utils.Result, 100),
+		PasswordHash: utils.Hash([]byte(args[0])),
+	}
+
+	go startDistribution(state)
+	inputHandler(state)
 }
 
-func handleConnection(conn net.Conn, id int, password []byte) {
+func inputHandler(state *utils.State) {
+	// Setup liner for CLI input
+	line := liner.NewLiner()
+	defer line.Close()
+
+	line.SetCtrlCAborts(true)
+	line.SetCompleter(func(line string) []string {
+		return []string{"status", "pause", "resume", "quit", "task", "taskall", "scantask"}
+	})
+
+	// interupt signals
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// loop
+	for {
+		select {
+		case <-sigCh:
+			state.StatusCode = utils.STATUS_SHUTDOWN
+			return
+		default:
+			if input, err := line.Prompt("> "); err == nil {
+				line.AppendHistory(input)
+				processCommand(input, state)
+			} else if err == liner.ErrPromptAborted {
+				return
+			} else {
+				fmt.Printf("Input error: %v\n", err)
+			}
+		}
+	}
+}
+func processCommand(input string, state *utils.State) {
+	parts := strings.Fields(input)
+	if len(parts) == 0 {
+		return
+	}
+	//  supported commands {"status", "pause", "resume", "quit", "task", "taskall", "scantask"}
+	switch parts[0] {
+	case "status":
+
+	case "pause":
+		state.Lock()
+		state.StatusCode = utils.STATUS_PAUSE
+		state.Unlock()
+		fmt.Println("Execution paused")
+
+	case "resume":
+		state.Lock()
+		state.StatusCode = utils.STATUS_CONTINUE
+		state.Unlock()
+		fmt.Println("Execution resumed")
+
+	case "quit":
+		state.Lock()
+		state.StatusCode = utils.STATUS_SHUTDOWN
+		state.Unlock()
+		fmt.Println("Shutting down")
+
+	case "task":
+		if len(parts) < 2 {
+			fmt.Println("Usage: task <cmd> <cmdArgs>")
+			return
+		}
+
+		utils.InputAddTask(state, parts)
+
+	case "taskall":
+		if len(parts) < 2 {
+			fmt.Println("Usage: taskall <cmd> <cmdArgs>")
+			return
+		}
+
+		utils.InputAddAllTask(state, parts)
+
+	case "scantask":
+		if len(parts) < 3 {
+			fmt.Println("Usage: scantask <iprange> <cmd> <cmdArgs>")
+			return
+		}
+
+		utils.InputAddScanTask(state, parts)
+
+	default:
+		fmt.Println("Unknown command. Available: status, pause, resume, quit, task, taskall, scantask")
+	}
+}
+
+func startDistribution(state *utils.State) {
+	port := "1234"
+	address := "localhost:" + port
+
+	// listen on defined port and address
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		println("Error setting up socket")
+		os.Exit(1)
+	}
+	defer listener.Close()
+
+	// accept incoming connections and pass them off to be handled
+	workers := 0
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			println("Error accepting connection")
+			continue
+		}
+
+		go handleConnection(conn, workers, state)
+		workers++
+	}
+}
+func handleConnection(conn net.Conn, id int, state *utils.State) {
 	defer conn.Close()
 	fmt.Println("Worker connected")
 
@@ -62,7 +184,7 @@ func handleConnection(conn net.Conn, id int, password []byte) {
 		plaintext := utils.SerializeStruct(task)
 
 		// send task to connection
-		err = utils.SendMessage(conn, plaintext, password, privateKey, connPubKey)
+		err = utils.SendMessage(conn, plaintext, state.PasswordHash, privateKey, connPubKey)
 		if err != nil {
 			log += fmt.Sprintf("\tError sending task to worker: %s\n\n", err.Error())
 			status = 1
@@ -70,7 +192,7 @@ func handleConnection(conn net.Conn, id int, password []byte) {
 		}
 
 		// recieve results from connection
-		resultBytes, err := utils.RecieveMessage(conn, password, privateKey, connPubKey)
+		resultBytes, err := utils.RecieveMessage(conn, state.PasswordHash, privateKey, connPubKey)
 		if err != nil {
 			log += fmt.Sprintf("\tError recieving message from worker: %s\n\n", err.Error())
 			status = 1
@@ -84,15 +206,15 @@ func handleConnection(conn net.Conn, id int, password []byte) {
 			break
 		}
 
-		resultQueue <- &results
+		state.ResultQueue <- &results
 		elapsed := time.Since(startTime)
 		log += fmt.Sprintf("\tScan Complete [%f seconds]\n\tConnection Complete [%f seconds]\n\n", results.CmdTime, elapsed.Seconds())
 	}
 
 	// if there was an error during execution, add the most recent task back to the queue
 	if status == 1 {
-		log += fmt.Sprintf("\tAdding task to queue:\n\t\tCommand: %s\n\t\tArgs: %s\n", task.Cmd, task.Args)
-		taskQueue <- task
+		log += fmt.Sprintf("\tAdding task to queue:\n\t\tStatus: %d\n\t\tCommand: %s\n\t\tArgs: %s\n", task.Status, task.Cmd, task.Args)
+		state.TaskQueue <- task
 	}
 
 	fmt.Println("Worker Disconnected")
@@ -100,107 +222,14 @@ func handleConnection(conn net.Conn, id int, password []byte) {
 	serverLog.WriteString(log)
 }
 
-func startDistribution(passwordHash []byte) {
-	port := "1234"
-	address := "localhost:" + port
+func formatTask(task *utils.Task) *utils.Task {
+	// if len(taskQueue) > 0 {
+	// 	task = <-taskQueue
+	// 	task.Status = utils.EXEC_TASK
+	// } else {
+	// 	task.Status = utils.EXIT_TASK
+	// }
 
-	// listen on defined port and address
-	listener, err := net.Listen("tcp", address)
-	if err != nil {
-		println("Error setting up socket")
-		os.Exit(1)
-	}
-	defer listener.Close()
-
-	// accept incoming connections and pass them off to be handled
-	workers := 0
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			println("Error accepting connection")
-			continue
-		}
-
-		go handleConnection(conn, workers, passwordHash)
-		workers++
-	}
-}
-
-func monitorState(ntasks uint32) {
-	for {
-		if uint32(len(resultQueue)) == ntasks {
-			var final string = "Tasks complete:\n"
-
-			for i := 0; len(resultQueue) != 0; i++ {
-				result := <-resultQueue
-				final += fmt.Sprintf("Result:\n%s\nTime: %f\n", result.CmdResult, result.CmdTime)
-			}
-
-			fmt.Print(final)
-			break
-		} else {
-			time.Sleep(time.Second)
-		}
-	}
-}
-
-func main() {
-	// server log
-	serverLog, _ = os.OpenFile("serverlog.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-
-	// set up args
-	cmd := flag.String("cmd", "", "Command to execute")
-	cmdArgs := flag.String("args", "", "Arguments to pass to command")
-
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s <ip_range> <password>\n", os.Args[0])
-		fmt.Fprintln(os.Stderr, "Arguments:")
-		fmt.Fprintln(os.Stderr, "  ip_range:   The IP range to scan")
-		fmt.Fprintln(os.Stderr, "  password:   The password to verify worker connection")
-		flag.PrintDefaults()
-	}
-
-	flag.Parse()
-	args := flag.Args()
-
-	if len(args) < 2 {
-		flag.Usage()
-		os.Exit(1)
-	}
-
-	iprange := args[0]
-	password := utils.Hash([]byte(args[1]))
-
-	ip, subnet, _ := net.ParseCIDR(iprange)
-	subnetMask, _ := subnet.Mask.Size()
-
-	// ip range we're covering, network being start ip and broadcast being end ip
-	var network uint32 = utils.PackIP(ip)
-	mask := ip.DefaultMask()
-	var umask uint32 = (uint32(mask[0]) << 24) | (uint32(mask[1]) << 16) | (uint32(mask[2]) << 8) | uint32(mask[3])
-	network = network & umask
-	var broadcast uint32 = 1<<(32-uint(subnetMask)) + network
-
-	// set up for number of tasks we need
-	var nips uint32 = broadcast - network
-	var ntasks uint32 = max(nips/NIPS_PER_TASK, 1)
-
-	taskQueue = make(chan *utils.Task, ntasks)
-	resultQueue = make(chan *utils.Result, ntasks)
-
-	fmt.Println("Scanning", nips, "IP(s) | Generating", ntasks, "task(s)")
-	for i := uint32(0); i < ntasks; i++ {
-		var task utils.Task
-		task.Cmd = *cmd
-		task.Args = *cmdArgs + fmt.Sprintf(" %s/%d", utils.UnpackIP((i*NIPS_PER_TASK)+network), TASK_MASK)
-
-		// add task to queue
-		taskQueue <- &task
-	}
-
-	// monitor state of program and handle output and storage
-	go monitorState(ntasks)
-
-	// start listening for worker threads
-	startDistribution(password)
+	// task.Expires = time.Now().Add(time.Minute)
+	return task
 }

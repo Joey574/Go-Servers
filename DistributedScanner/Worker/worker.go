@@ -53,14 +53,8 @@ func handleConnection(conn net.Conn, password []byte) {
 			break
 		}
 
-		// ensure task isn't expired
-		if task.Expires.Before(time.Now()) {
-			fmt.Println("Task already expired")
-			break
-		}
-
 		// execute the task
-		if task.Status == utils.EXEC_TASK {
+		if task.Status == utils.STATUS_CONTINUE {
 			startTime := time.Now()
 			scanString, err := executeTask(task)
 			if err != nil {
@@ -83,7 +77,7 @@ func handleConnection(conn net.Conn, password []byte) {
 				fmt.Println("Error sending message to control:", err.Error())
 				break
 			}
-		} else if task.Status == utils.EXIT_TASK {
+		} else if task.Status == utils.STATUS_SHUTDOWN {
 			break
 		}
 

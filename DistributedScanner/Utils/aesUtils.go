@@ -7,8 +7,6 @@ import (
 	"fmt"
 )
 
-const AES_KEY_SIZE int = 256
-
 func GenerateAESKey() ([]byte, error) {
 	key := make([]byte, AES_KEY_SIZE/8)
 	_, err := rand.Read(key)
